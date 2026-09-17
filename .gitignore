@@ -1,0 +1,38 @@
+# Local agent configuration and browser artifacts
+/.codex/
+/.playwright-mcp/
+
+# Python and Node.js caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+node_modules/
+
+# Local credentials
+.env
+.env.*
+!.env.example
+
+# Logs and test output
+*.log
+/tests/*.png
+/tests/startup-recovery*/
+/test-results/
+/playwright-report/
+/coverage/
+
+# Local reference screenshots (published screenshots live in docs/images)
+/*.png
+
+# Client archives and patch recovery artifacts
+*.asar
+*.asar.*
+*.bak
+*.tps-tmp
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini

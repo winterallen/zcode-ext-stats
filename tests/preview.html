@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>会话统计测试页</title><link rel="icon" href="data:,">
+<style>
+  :root{--color-background:#fff;--color-foreground:#202228;--color-foreground-subtle:#858994;--color-border:#e4e4e7}
+  body{margin:24px;background:#fafafa;color:#202228;font-family:system-ui,sans-serif}
+  nav{display:flex;flex-wrap:wrap;gap:8px}button{cursor:pointer}main{max-width:760px;margin:240px auto 0}
+  .card{border:1px solid #ddd;padding:14px;border-radius:14px;background:var(--color-background)}
+  textarea{box-sizing:border-box;width:100%;height:72px;resize:none;border:0;background:transparent;color:inherit}
+  .flex{display:flex;justify-content:space-between}.items-end{align-items:flex-end}form{margin:0}
+  body.dark{--color-background:#24262b;--color-foreground:#e8e8e8;--color-foreground-subtle:#aaa;--color-border:#444;background:#18191c;color:#ddd}
+</style>
+<nav><button id="a">会话 A</button><button id="b">会话 B</button><button id="empty">空会话</button><button id="fail">查询失败</button><button id="slow">延迟响应</button><button id="update">更新统计</button><button id="persist">首条模型记录落库</button><button id="transient">当前查询失败</button><button id="theme">切换主题</button></nav>
+<nav style="margin-top:8px"><button id="live" disabled>开始实时输出</button><button id="pause-live">暂停输出</button><button id="tool-live">执行工具</button><button id="end-live">结束输出</button></nav>
+<main data-session-id="session-a"><div class="card"><form><textarea data-testid="v4-composer-input" aria-label="输入消息" placeholder="输入消息"></textarea><div class="flex items-end"><span>模型 · 完全访问</span><button type="button">发送</button></div></form></div></main>
+<script>
+const sample = {ok:true,turns:5,steps:55,totalTokens:5807056,inputTokens:5739337,outputTokens:67719,cacheReadTokens:5625984,cacheWriteTokens:0,uncachedInputTokens:113353,cacheHitRate:5625984/5739337,modelMs:351000,toolMs:199000,ttftMs:1200,tps:240,tpsValidCalls:54,running:false};
+let firstModelSaved=false, transientFailure=false;
+window.readCount=0; window.delayNext=false;
+window.zcodeSessionStats={read:async(id)=>{window.readCount++;const snapshot=id==='session-b'?{...sample,turns:1,steps:2,totalTokens:1234,cacheHitRate:0}:sample;
+  if(window.delayNext){window.delayNext=false;await new Promise(r=>setTimeout(r,2500));}
+  if(transientFailure)throw Error('temporary failure');
+  if(id==='empty' && firstModelSaved)return {...sample,steps:1,turns:0,sessionId:id};
+  if(id==='empty')return {ok:false,reason:'no-history',sessionId:id};
+  if(id==='fail')throw Error('fixture failure');
+  return {...snapshot,sessionId:id};}};
+for(const id of ['a','b','empty','fail'])document.getElementById(id).onclick=()=>document.querySelector('main').setAttribute('data-session-id',id==='a'||id==='b'?'session-'+id:id);
+document.getElementById('slow').onclick=()=>{window.delayNext=true;document.querySelector('main').setAttribute('data-session-id','session-slow');};
+document.getElementById('update').onclick=()=>{sample.steps++;sample.totalTokens+=100;sample.inputTokens+=100;sample.uncachedInputTokens+=100;sample.cacheHitRate=sample.cacheReadTokens/sample.inputTokens;};
+document.getElementById('persist').onclick=()=>{firstModelSaved=true;};
+document.getElementById('transient').onclick=()=>{transientFailure=!transientFailure;};
+document.getElementById('theme').onclick=()=>document.body.classList.toggle('dark');
+let livePort, liveTimer, liveId, run=0, telemetrySeq=0, frameSeq=0;
+// The host owns startup; the statistics observer must not drain queued messages.
+window.addEventListener('message', (event) => {
+  if (event.source !== window || !event.ports.length) return;
+  const port = event.ports[0];
+  setTimeout(() => { port.addEventListener('message', (e) => { if (e.data?.fixtureHandshake) document.getElementById('live').disabled = false; }); port.start(); }, 50);
+});
+const sendLive=(value)=>{const body=new TextEncoder().encode(JSON.stringify(value));const bytes=new Uint8Array(body.length+4);bytes.set(body,4);livePort.postMessage(bytes);};
+const liveEvent=(kind,extra={})=>sendLive({version:1,sessionId:liveId,turnId:'turn-'+run,sourceCommandId:'command-'+run,eventId:'live-'+(++telemetrySeq),occurredAt:Date.now(),kind,...extra});
+const liveRows=(deltas)=>sendLive({topic:'conversation/'+liveId,frame:{logEpoch:'live',toSeq:++frameSeq,payload:{kind:'deltas',deltas}}});
+window.addEventListener('DOMContentLoaded',()=>{const channel=new MessageChannel();livePort=channel.port1;livePort.postMessage({fixtureHandshake:true});const format=new URLSearchParams(location.search).get('port');const notice=format==='legacy'?'zcode:service-port':{type:format==='scoped'?'zcode:scoped-service-port':'zcode:service-port'};window.postMessage(notice,'*',[channel.port2]);});
+document.getElementById('live').onclick=()=>{
+  clearInterval(liveTimer); if(liveId)liveEvent('turn.terminal');
+  run++;liveId=document.querySelector('main').getAttribute('data-session-id');
+  liveEvent('turn.started');
+  liveRows([{kind:'turnHeader',rowId:'head-'+run,turnId:'product-'+run,sourceCommandId:'command-'+run,state:'running'},
+    {kind:'assistantText',rowId:'text-'+run,turnId:'product-'+run,assistantResponseId:'response-'+run,text:'',state:'streaming'}]);
+  // Regression order: product row before model start, transport completion before body text.
+  liveEvent('model.request.status',{status:'model_request_started',requestId:'request-'+run});
+  liveEvent('model.request.status',{status:'model_request_completed',requestId:'request-'+run});
+  liveTimer=setInterval(()=>{liveEvent('stream.chunk',{channel:'text',chunkLength:25,assistantMessageId:'response-'+run});liveRows([{op:'row.delta',rowId:'text-'+run,path:'text',append:'字'.repeat(25)}]);},250);
+};
+document.getElementById('pause-live').onclick=()=>clearInterval(liveTimer);
+document.getElementById('tool-live').onclick=()=>{clearInterval(liveTimer);liveEvent('tool.lifecycle',{phase:'started',toolCallId:'tool-'+run});};
+document.getElementById('end-live').onclick=()=>{clearInterval(liveTimer);liveEvent('turn.terminal',{status:'success'});};
+</script>
+<script src="../scripts/zcode-ext-stats.js"></script></html>
